@@ -1,28 +1,18 @@
 package com.radiadesign.catalina.session;
 
-import org.apache.catalina.Lifecycle;
-import org.apache.catalina.LifecycleException;
-import org.apache.catalina.LifecycleListener;
-import org.apache.catalina.util.LifecycleSupport;
-import org.apache.catalina.LifecycleState;
-import org.apache.catalina.Loader;
-import org.apache.catalina.Valve;
-import org.apache.catalina.Session;
+import org.apache.catalina.*;
 import org.apache.catalina.session.ManagerBase;
-
+import org.apache.juli.logging.Log;
+import org.apache.juli.logging.LogFactory;
+import redis.clients.jedis.Jedis;
 import redis.clients.jedis.JedisPool;
 import redis.clients.jedis.JedisPoolConfig;
-import redis.clients.jedis.Jedis;
 import redis.clients.jedis.Protocol;
 
 import java.io.IOException;
 import java.util.Arrays;
-import java.util.Collections;
 import java.util.Enumeration;
 import java.util.Set;
-
-import org.apache.juli.logging.Log;
-import org.apache.juli.logging.LogFactory;
 
 
 public class RedisSessionManager extends ManagerBase implements Lifecycle {
@@ -48,10 +38,6 @@ public class RedisSessionManager extends ManagerBase implements Lifecycle {
 
   protected String serializationStrategyClass = "com.radiadesign.catalina.session.JavaSerializer";
 
-  /**
-   * The lifecycle event support for this component.
-   */
-  protected LifecycleSupport lifecycle = new LifecycleSupport(this);
 
   public String getHost() {
     return host;
@@ -113,20 +99,7 @@ public class RedisSessionManager extends ManagerBase implements Lifecycle {
     if (getDatabase() != 0) {
       jedis.select(getDatabase());
     }
-
     return jedis;
-  }
-
-  protected void returnConnection(Jedis jedis, Boolean error) {
-    if (error) {
-      connectionPool.returnBrokenResource(jedis);
-    } else {
-      connectionPool.returnResource(jedis);
-    }
-  }
-
-  protected void returnConnection(Jedis jedis) {
-    returnConnection(jedis, false);
   }
 
   @Override
@@ -146,7 +119,8 @@ public class RedisSessionManager extends ManagerBase implements Lifecycle {
    */
   @Override
   public void addLifecycleListener(LifecycleListener listener) {
-    lifecycle.addLifecycleListener(listener);
+    //lifecycle.addLifecycleListener(listener);
+    super.addLifecycleListener(listener);
   }
 
   /**
@@ -155,7 +129,8 @@ public class RedisSessionManager extends ManagerBase implements Lifecycle {
    */
   @Override
   public LifecycleListener[] findLifecycleListeners() {
-    return lifecycle.findLifecycleListeners();
+    return super.findLifecycleListeners();
+    //return lifecycle.findLifecycleListeners();
   }
 
 
@@ -166,7 +141,8 @@ public class RedisSessionManager extends ManagerBase implements Lifecycle {
    */
   @Override
   public void removeLifecycleListener(LifecycleListener listener) {
-    lifecycle.removeLifecycleListener(listener);
+    //lifecycle.removeLifecycleListener(listener);
+    super.removeLifecycleListener(listener);
   }
 
   /**
@@ -183,7 +159,8 @@ public class RedisSessionManager extends ManagerBase implements Lifecycle {
     setState(LifecycleState.STARTING);
 
     Boolean attachedToValve = false;
-    for (Valve valve : getContainer().getPipeline().getValves()) {
+
+    for (Valve valve : getContext().getPipeline().getValves()) {
       if (valve instanceof RedisSessionHandlerValve) {
         this.handlerValve = (RedisSessionHandlerValve) valve;
         this.handlerValve.setRedisSessionManager(this);
@@ -212,11 +189,12 @@ public class RedisSessionManager extends ManagerBase implements Lifecycle {
       throw new LifecycleException(e);
     }
 
-    log.info("Will expire sessions after " + getMaxInactiveInterval() + " seconds");
+    log.info("Will expire sessions after " + getSessionMaxAliveTime() + " seconds");
 
     initializeDatabaseConnection();
 
-    setDistributable(true);
+    //setDistributable(true);
+    super.startInternal();
   }
 
 
@@ -253,7 +231,7 @@ public class RedisSessionManager extends ManagerBase implements Lifecycle {
     session.setNew(true);
     session.setValid(true);
     session.setCreationTime(System.currentTimeMillis());
-    session.setMaxInactiveInterval(getMaxInactiveInterval());
+    session.setMaxInactiveInterval(getSessionMaxAliveTime());
 
     String jvmRoute = getJvmRoute();
 
@@ -290,7 +268,7 @@ public class RedisSessionManager extends ManagerBase implements Lifecycle {
       currentSessionIsPersisted.set(false);
     } finally {
       if (jedis != null) {
-        returnConnection(jedis, error);
+        jedis.close();
       }
     }
 
@@ -337,14 +315,12 @@ public class RedisSessionManager extends ManagerBase implements Lifecycle {
 
   public void clear() {
     Jedis jedis = null;
-    Boolean error = true;
     try {
       jedis = acquireConnection();
       jedis.flushDB();
-      error = false;
     } finally {
       if (jedis != null) {
-        returnConnection(jedis, error);
+        jedis.close();
       }
     }
   }
@@ -355,11 +331,10 @@ public class RedisSessionManager extends ManagerBase implements Lifecycle {
     try {
       jedis = acquireConnection();
       int size = jedis.dbSize().intValue();
-      error = false;
       return size;
     } finally {
       if (jedis != null) {
-        returnConnection(jedis, error);
+        jedis.close();
       }
     }
   }
@@ -370,11 +345,10 @@ public class RedisSessionManager extends ManagerBase implements Lifecycle {
     try {
       jedis = acquireConnection();
       Set<String> keySet = jedis.keys("*");
-      error = false;
       return keySet.toArray(new String[keySet.size()]);
     } finally {
       if (jedis != null) {
-        returnConnection(jedis, error);
+        jedis.close();
       }
     }
   }
@@ -390,7 +364,6 @@ public class RedisSessionManager extends ManagerBase implements Lifecycle {
 
       jedis = acquireConnection();
       byte[] data = jedis.get(id.getBytes());
-      error = false;
 
       if (data == null) {
         log.trace("Session " + id + " not found in Redis");
@@ -403,7 +376,7 @@ public class RedisSessionManager extends ManagerBase implements Lifecycle {
         serializer.deserializeInto(data, session);
         session.setId(id);
         session.setNew(false);
-        session.setMaxInactiveInterval(getMaxInactiveInterval() * 1000);
+        session.setMaxInactiveInterval(getSessionMaxAliveTime() * 1000);
         session.access();
         session.setValid(true);
         session.resetDirtyTracking();
@@ -426,7 +399,7 @@ public class RedisSessionManager extends ManagerBase implements Lifecycle {
       throw new IOException("Unable to deserialize into session", ex);
     } finally {
       if (jedis != null) {
-        returnConnection(jedis, error);
+        jedis.close();
       }
     }
   }
@@ -462,17 +435,16 @@ public class RedisSessionManager extends ManagerBase implements Lifecycle {
 
       currentSessionIsPersisted.set(true);
 
-      log.trace("Setting expire timeout on session [" + redisSession.getId() + "] to " + getMaxInactiveInterval());
-      jedis.expire(binaryId, getMaxInactiveInterval());
+      log.trace("Setting expire timeout on session [" + redisSession.getId() + "] to " + getSessionMaxAliveTime());
+      jedis.expire(binaryId, getSessionMaxAliveTime());
 
-      error = false;
     } catch (IOException e) {
       log.error(e.getMessage());
 
       throw e;
     } finally {
       if (jedis != null) {
-        returnConnection(jedis, error);
+        jedis.close();
       }
     }
   }
@@ -485,17 +457,14 @@ public class RedisSessionManager extends ManagerBase implements Lifecycle {
   @Override
   public void remove(Session session, boolean update) {
     Jedis jedis = null;
-    Boolean error = true;
-
     log.trace("Removing session ID : " + session.getId());
 
     try {
       jedis = acquireConnection();
       jedis.del(session.getId());
-      error = false;
     } finally {
       if (jedis != null) {
-        returnConnection(jedis, error);
+        jedis.close();
       }
     }
   }
@@ -533,8 +502,8 @@ public class RedisSessionManager extends ManagerBase implements Lifecycle {
 
     Loader loader = null;
 
-    if (container != null) {
-      loader = container.getLoader();
+    if (getContext() != null) {
+      loader = getContext().getLoader();
     }
 
     ClassLoader classLoader = null;
