@@ -23,6 +23,8 @@ The official release branches in Git are as follows:
 * `tomcat-7`: Finalized; has now been merged into `master`. Compatible with Java 6 or 7.
 * `java-7`: All of the work from master for Tomcat 7 but taking advantage of new features in Java 7. Compatible with Java 7 only.
 
+**Now Tomcat8+ Supported! :)**
+
 Architecture
 ------------
 
